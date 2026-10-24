@@ -1,14 +1,19 @@
 """Issue Onboarder Agent.
 
-A Google Agent Development Kit (ADK) agent powered by gemini-2.5-flash that analyzes
-open-source repository issues, inspects local codebase files via custom tools, and
-generates clear, actionable, beginner-friendly onboarding guides for new contributors.
+A Google Agent Development Kit (ADK) agent powered by gemini-3.8-flash that analyzes
+open-source repository issues (from live GitHub issue URLs or raw text descriptions),
+inspects local codebase files via custom tools, and generates clear, actionable,
+beginner-friendly onboarding guides for new contributors.
 """
 
 import argparse
 import asyncio
+import json
 import os
+import re
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -30,6 +35,67 @@ except ImportError:
 
 
 # --- Custom Tools ---
+
+def fetch_github_issue(issue_url: str) -> str:
+    """Fetches details of a public GitHub issue using the GitHub REST API.
+
+    Parses the issue URL to extract owner, repository, and issue number, then
+    retrieves the live issue title, body/description, state, author, and labels.
+
+    Args:
+        issue_url: Public GitHub issue URL (e.g. 'https://github.com/owner/repo/issues/123').
+
+    Returns:
+        A formatted string with the issue details, or an error message if retrieval fails.
+    """
+    pattern = r"github\.com/([^/]+)/([^/]+)/issues/(\d+)"
+    match = re.search(pattern, issue_url.strip())
+    if not match:
+        return (
+            f"Error: '{issue_url}' is not a valid GitHub issue URL. "
+            "Expected format: https://github.com/owner/repository/issues/123"
+        )
+
+    owner, repo, issue_number = match.groups()
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}"
+
+    headers = {
+        "User-Agent": "Issue-Onboarder-Agent",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    github_token = os.getenv("GITHUB_TOKEN")
+    if github_token:
+        headers["Authorization"] = f"Bearer {github_token}"
+
+    req = urllib.request.Request(api_url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            if response.status != 200:
+                return f"Error: GitHub API returned status code {response.status}."
+            data = json.loads(response.read().decode("utf-8"))
+
+        title = data.get("title", "No title")
+        body = data.get("body", "No description provided.") or "No description provided."
+        state = data.get("state", "unknown")
+        labels = [lbl.get("name", "") for lbl in data.get("labels", []) if isinstance(lbl, dict)]
+        labels_str = ", ".join(labels) if labels else "None"
+        author = data.get("user", {}).get("login", "unknown")
+
+        return (
+            f"=== GitHub Issue #{issue_number} ({owner}/{repo}) ===\n"
+            f"Title: {title}\n"
+            f"State: {state}\n"
+            f"Author: @{author}\n"
+            f"Labels: {labels_str}\n\n"
+            f"Description:\n{body}"
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return f"Error: Issue not found at {issue_url} (HTTP 404). Ensure the repository and issue are public."
+        return f"Error fetching GitHub issue (HTTP {exc.code}): {exc.reason}"
+    except Exception as exc:
+        return f"Error fetching GitHub issue '{issue_url}': {str(exc)}"
+
 
 def read_local_code_file(file_path: str) -> str:
     """Reads and returns the contents of a local code or documentation file.
@@ -106,11 +172,13 @@ You are an expert Open-Source Mentor and Contributor Onboarding Assistant.
 Your goal is to help first-time and beginner developers successfully understand,
 implement, test, and submit pull requests for issues in this repository.
 
-When given an open-source issue, bug report, or feature request:
-1. Examine the repository structure using `list_repository_files` and read relevant project
+When given an open-source issue, bug report, feature request, or GitHub issue URL:
+1. If the input contains or references a GitHub issue URL (e.g. 'https://github.com/owner/repo/issues/123'),
+   call `fetch_github_issue` to retrieve the live issue title, description, and labels.
+2. Examine the local repository structure using `list_repository_files` and read relevant project
    files (such as `README.md`, `CONTRIBUTING.md`, source code, and tests) using `read_local_code_file`.
-2. Analyze the problem thoroughly and locate the exact components and files involved.
-3. Produce a structured, beginner-friendly Onboarding Plan formatted in Markdown:
+3. Analyze the problem thoroughly and locate the exact components and files involved.
+4. Produce a structured, beginner-friendly Onboarding Plan formatted in Markdown:
    - **1. Issue Summary & Context**: A clear, non-jargon explanation of what the issue is asking for.
    - **2. Prerequisites & Environment Setup**: What tools, language runtime, and virtual environment steps are needed.
    - **3. Codebase Walkthrough**: Specific files, classes, and functions involved, explaining how they work together.
@@ -126,9 +194,9 @@ if Agent is not None:
     root_agent = Agent(
         name=AGENT_NAME,
         model=DEFAULT_MODEL,
-        description="Analyzes open-source issues and repository code to create beginner-friendly contributor onboarding plans.",
+        description="Analyzes open-source issues (live GitHub URLs or text) and repository code to create beginner-friendly contributor onboarding plans.",
         instruction=AGENT_INSTRUCTION,
-        tools=[read_local_code_file, list_repository_files],
+        tools=[fetch_github_issue, read_local_code_file, list_repository_files],
     )
 else:
     root_agent = None
@@ -146,7 +214,7 @@ async def run_onboarder(issue_prompt: str, model_name: str = DEFAULT_MODEL) -> N
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
     if not api_key:
         print("[!] Error: GEMINI_API_KEY is not configured.")
-        print("    To run the agent with Gemini 2.5 Flash:")
+        print("    To run the agent with Gemini:")
         print("    1. Copy .env.example to .env: Copy-Item .env.example .env")
         print("    2. Set GEMINI_API_KEY=your_api_key in .env")
         print("    (Get a free key from Google AI Studio: https://aistudio.google.com/)\n")
@@ -156,13 +224,13 @@ async def run_onboarder(issue_prompt: str, model_name: str = DEFAULT_MODEL) -> N
 
     print(f"\n[Issue Onboarder Agent | Model: {model_name}]")
     print("-" * 60)
-    print(f"Analyzing Issue:\n{issue_prompt}\n")
+    print(f"Analyzing Issue / Input:\n{issue_prompt}\n")
     print("-" * 60)
     print("Generating contributor onboarding plan...\n")
 
     user_message = types.Content(
         role="user",
-        parts=[types.Part(text=f"Please review this open-source repository issue and generate a beginner-friendly contributor onboarding plan:\n\n{issue_prompt}")]
+        parts=[types.Part(text=f"Please review this open-source repository issue (if it is a GitHub issue URL, fetch it first) and generate a beginner-friendly contributor onboarding plan:\n\n{issue_prompt}")]
     )
 
     max_retries = 3
@@ -171,9 +239,9 @@ async def run_onboarder(issue_prompt: str, model_name: str = DEFAULT_MODEL) -> N
             agent = Agent(
                 name=AGENT_NAME,
                 model=model_name,
-                description="Analyzes open-source issues and repository code to create beginner-friendly contributor onboarding plans.",
+                description="Analyzes open-source issues (live GitHub URLs or text) and repository code to create beginner-friendly contributor onboarding plans.",
                 instruction=AGENT_INSTRUCTION,
-                tools=[read_local_code_file, list_repository_files],
+                tools=[fetch_github_issue, read_local_code_file, list_repository_files],
             )
 
             session_service = InMemorySessionService()
@@ -239,7 +307,7 @@ def main() -> None:
         "--issue",
         "-i",
         type=str,
-        help="Description or text of the issue to analyze."
+        help="GitHub issue URL (e.g. https://github.com/owner/repo/issues/123) or text description of the issue."
     )
     parser.add_argument(
         "--model",
@@ -254,7 +322,7 @@ def main() -> None:
     issue_text = args.issue
     if not issue_text:
         print("=== Issue Onboarder Agent ===")
-        print("Enter or paste the open-source issue title and description below.")
+        print("Enter or paste the GitHub issue URL or issue title/description below.")
         print("(Press Enter, then Ctrl+Z and Enter on Windows or Ctrl+D on Linux/macOS when finished):")
         try:
             issue_text = sys.stdin.read().strip()
@@ -263,7 +331,7 @@ def main() -> None:
             sys.exit(0)
 
     if not issue_text:
-        print("No issue text provided. Exiting.")
+        print("No issue provided. Exiting.")
         sys.exit(0)
 
     asyncio.run(run_onboarder(issue_prompt=issue_text, model_name=args.model))
@@ -271,4 +339,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

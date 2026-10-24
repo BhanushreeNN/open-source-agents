@@ -11,10 +11,11 @@
 - **Intended Users**: Open-source beginners, student developers, hackathon participants, and maintainers who want to provide automated, friendly onboarding guides for their repositories.
 
 ### Key Features
+- **Live GitHub Issue Fetcher**: Uses `fetch_github_issue` to parse public GitHub issue URLs (e.g., `https://github.com/owner/repo/issues/123`) and retrieve live issue title, description, and labels via the public GitHub REST API.
 - **Codebase-Aware Issue Review**: Features custom local inspection tools (`read_local_code_file` and `list_repository_files`) allowing the agent to read repository files, documentation, and existing code patterns.
 - **Structured Contributor Onboarding Plan**: Produces an actionable markdown guide containing issue summary, architecture context, step-by-step implementation plan, testing commands, and git PR checklists.
-- **Google ADK & Gemini 2.5 Flash**: Leverages Google's Agent Development Kit (`google-adk`) architecture, including native tool calling, session management, and `gemini-2.5-flash`.
-- **Flexible Execution Modes**: Run interactively via terminal, pass issues directly through CLI flags (`--issue`), or plug directly into Google ADK's web interface (`adk web .`).
+- **Google ADK & Gemini 3.8 Flash**: Leverages Google's Agent Development Kit (`google-adk`) architecture, including native tool calling, session management, and `gemini-3.8-flash`.
+- **Flexible Execution Modes**: Run with live GitHub URLs or text prompts via CLI flags (`--issue`), interactively via terminal, or through Google ADK's web interface (`adk web .`).
 
 ---
 
@@ -32,15 +33,16 @@
 
 ```
 [Contributor / User]
-         │ (Submits Issue Description)
+         │ (Submits Issue URL or Text Description)
          ▼
 [CLI / ADK Runner] ──> [InMemorySessionService]
          │
          ▼
-[Issue Onboarder Agent] ──> [Gemini 2.5 Flash]
+[Issue Onboarder Agent] ──> [Gemini 3.8 Flash]
          │                          ▲
          │ (Tool Execution Loop)    │
          ├──────────────────────────┤
+         │ • fetch_github_issue()   │ ──> [GitHub REST API]
          │ • read_local_code_file() │
          │ • list_repository_files()│
          ▼                          │
@@ -114,12 +116,17 @@ Before running this project, ensure you have:
 
 ## How to Run
 
-### Option 1: Direct CLI with an Issue Argument
+### Option 1: Direct CLI with a Live GitHub Issue URL
+```bash
+python agent.py --issue "https://github.com/gdgcblr/open-source-agents/issues/1"
+```
+
+### Option 2: Direct CLI with an Issue Text Argument
 ```bash
 python agent.py --issue "Issue #42: Add support for custom timeout parameter in HTTP client utility"
 ```
 
-### Option 2: Interactive Prompt Mode
+### Option 3: Interactive Prompt Mode
 ```bash
 python agent.py
 ```
